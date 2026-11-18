@@ -1,0 +1,21 @@
+name: Idea or feature request
+description: Something deadweight should measure, flag or fix
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the problem?
+      description: What in your Claude Code setup costs you context or time today?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What should deadweight do?
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Want to build it?
+      options:
+        - label: I'd like to open a PR for this

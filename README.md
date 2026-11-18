@@ -152,12 +152,9 @@ MCP servers in `.claude.json` and claude.ai connectors are never edited; deadwei
 
 ## Contributing
 
-Issues and pull requests are welcome. If deadweight misattributes something in your setup, run `deadweight --json`, remove anything private, and open an issue with the relevant part.
+Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the [good first issues](https://github.com/msertdev/deadweight/labels/good%20first%20issue); the whole codebase is about 2,600 lines of Rust.
 
-```sh
-cargo test
-cargo clippy --all-targets -- -D warnings
-```
+If deadweight misattributes something in your setup, run `deadweight --json`, remove anything private, and open an issue with the relevant part.
 
 ## License
 

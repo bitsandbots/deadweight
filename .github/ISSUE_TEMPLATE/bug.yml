@@ -1,0 +1,25 @@
+name: Bug or wrong number
+description: deadweight crashed, misattributed something, or reported a number that looks off
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did deadweight print, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: The part of `deadweight` or `deadweight --json` that's wrong. Remove anything private (project paths, server names) first.
+      render: text
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of `deadweight --version` and `claude --version`, plus your OS.
+      placeholder: deadweight 0.2.0, Claude Code 2.x, macOS 15
+    validations:
+      required: true
