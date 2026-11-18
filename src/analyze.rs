@@ -18,6 +18,8 @@ const SCHEMA_CHARS_PER_TOKEN: f64 = 3.0;
 const HEAVY_SKILL_TOKENS: f64 = 400.0;
 /// A user-scope MCP server used in at most this many projects is worth scoping.
 const MAX_SCOPED_PROJECTS: usize = 2;
+/// Claude Code's default `skillListingBudgetFraction`: 1% of the context window.
+const DEFAULT_SKILL_BUDGET: f64 = 0.01;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -177,6 +179,19 @@ pub struct ManualStep {
     pub tokens: f64,
 }
 
+/// The skill listing is full. Raising `skillListingBudgetFraction` buys room
+/// for more descriptions at a price on every request.
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillBudget {
+    /// The configured fraction, or Claude Code's default.
+    pub fraction: f64,
+    pub configured: bool,
+    /// Twice the current fraction.
+    pub suggested: f64,
+    /// Roughly what the extra room costs per request once it fills up.
+    pub extra_tokens: f64,
+}
+
 /// A user-scope MCP server that loads in every project but is only used in a few.
 #[derive(Debug, Clone, Serialize)]
 pub struct ScopeHint {
@@ -212,6 +227,8 @@ pub struct Analysis {
     /// Of those, the ones you actually used in the window.
     pub used_skills_without_description: Vec<String>,
     pub skill_listing_chars: usize,
+    /// Set when descriptions were dropped for lack of room.
+    pub skill_budget: Option<SkillBudget>,
     pub heavy_skills: Vec<HeavySkill>,
     pub manual: Vec<ManualStep>,
     pub scope_hints: Vec<ScopeHint>,
@@ -602,14 +619,20 @@ pub fn analyze(inv: &Inventory, hist: &History, window_days: u64) -> Option<Anal
         .collect();
     heavy_skills.sort_by(|a, b| b.tokens.total_cmp(&a.tokens));
 
-    // Unused things deadweight leaves to you, with what removes them.
+    // Unused things deadweight leaves to you, with what removes them. When no
+    // connector was used at all, `fix` switches them off in one setting instead.
+    let any_connector_used = sources
+        .iter()
+        .any(|s| matches!(s.source, Source::Connector(_)) && s.uses > 0);
     let manual = sources
         .iter()
         .filter(|s| s.uses == 0 && s.tokens >= 1.0)
         .filter_map(|s| {
             let how = match &s.source {
                 Source::UserMcp(n) => format!("claude mcp remove \"{n}\""),
-                Source::Connector(n) => format!("claude.ai > Settings > Connectors > {n}"),
+                Source::Connector(n) if any_connector_used || inv.connectors_disabled => {
+                    format!("/mcp, then turn off \"claude.ai {n}\"")
+                }
                 _ => return None,
             };
             Some(ManualStep {
@@ -652,6 +675,16 @@ pub fn analyze(inv: &Inventory, hist: &History, window_days: u64) -> Option<Anal
         .collect();
     scope_hints.sort_by(|a, b| b.tokens.total_cmp(&a.tokens));
 
+    let skill_budget = (!snap.skills_without_description.is_empty()).then(|| {
+        let fraction = inv.skill_budget_fraction.unwrap_or(DEFAULT_SKILL_BUDGET);
+        SkillBudget {
+            fraction,
+            configured: inv.skill_budget_fraction.is_some(),
+            suggested: (fraction * 200.0).round() / 100.0,
+            extra_tokens: snap.skill_listing_chars as f64 / PROSE_CHARS_PER_TOKEN,
+        }
+    });
+
     let mut recent = hist.recent_first_requests.clone();
     recent.sort_unstable();
     let median_tokens = (recent.len() >= 3).then(|| recent[recent.len() / 2]);
@@ -675,6 +708,7 @@ pub fn analyze(inv: &Inventory, hist: &History, window_days: u64) -> Option<Anal
         skills_without_description: snap.skills_without_description.clone(),
         used_skills_without_description,
         skill_listing_chars: snap.skill_listing_chars,
+        skill_budget,
         heavy_skills,
         manual,
         scope_hints,

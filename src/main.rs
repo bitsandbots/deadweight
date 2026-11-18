@@ -44,7 +44,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Disable unused plugins and park unused skills (backed up, undoable)
+    /// Disable unused plugins, hide unused skills and connectors (backed up, undoable)
     Fix {
         /// Apply without asking
         #[arg(long, short)]
@@ -55,9 +55,12 @@ enum Command {
         /// Also disable unused plugins that run hooks
         #[arg(long)]
         include_hooked: bool,
-        /// Never touch this plugin or skill (repeatable)
+        /// Never touch this plugin or skill, or `connectors` (repeatable)
         #[arg(long, value_name = "NAME")]
         keep: Vec<String>,
+        /// Move unused skills into the backup folder instead of hiding them
+        #[arg(long)]
+        park_skills: bool,
         /// Run even with fewer than 5 sessions of history
         #[arg(long)]
         force: bool,
@@ -89,11 +92,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
             dry_run,
             include_hooked,
             ref keep,
+            park_skills,
             force,
         }) => {
             let opts = PlanOptions {
                 include_hooked,
                 keep: keep.clone(),
+                park_skills,
             };
             run_fix(&paths, &cli, &opts, yes, dry_run, force)
         }

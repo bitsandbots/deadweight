@@ -47,12 +47,14 @@ $ deadweight
   ✗ 151 of 214 skills are listed without a description: the skill listing is full
       (~30.0k characters). Claude sees only their names, so it can't tell when to use them.
       Including 4 you actually use: pdf-tools:extract, review-pr, workflow-kit:plan, +1 more
+      Make room: hide what you don't use (deadweight fix), or set "skillListingBudgetFraction": 0.02 in settings.json
+      (default 0.01; the extra room costs up to ~8.3k tokens per request).
   ✗ 2 MCP servers failed to connect at startup
   ! 9 MCP servers never signed in, still listing 18 auth-only tools
   ! 3 skill names are listed more than once
   ! 198 of 214 listed skills were not used in 30 days (~5.1k per request)
 
-  Run deadweight fix to disable 6 unused plugins and park 11 unused skills and save ~6.8k tokens per request.
+  Run deadweight fix to disable 6 unused plugins and hide 11 unused skills and save ~6.8k tokens per request.
 
   UNUSED, BUT YOURS TO REMOVE
   mcp server playwright              ~1.4k   claude mcp remove "playwright"
@@ -89,7 +91,7 @@ deadweight --days 60       # count anything used in the last 60 days as "used"
 deadweight --json          # machine-readable output
 
 deadweight fix --dry-run   # show what would change
-deadweight fix             # disable unused plugins, park unused skills (asks first)
+deadweight fix             # disable unused plugins, hide unused skills (asks first)
 deadweight undo            # put everything back
 ```
 
@@ -97,7 +99,8 @@ deadweight undo            # put everything back
 
 | flag | effect |
 | --- | --- |
-| `--keep NAME` | never touch this plugin or skill (repeatable) |
+| `--keep NAME` | never touch this plugin or skill, or `connectors` (repeatable) |
+| `--park-skills` | move unused skills into the backup folder instead of hiding them |
 | `--include-hooked` | also disable unused plugins that run hooks |
 | `--yes` | don't ask for confirmation |
 | `--force` | run even with fewer than 5 sessions of history |
@@ -134,12 +137,12 @@ On the author's machine, 1.4 GB of transcripts (41 sessions, 400+ subagent runs)
 
 - **Read-only by default.** Only `fix` and `undo` write anything, and both ask first.
 - **No secrets are read.** From `.claude.json` deadweight takes only MCP server *names*, never commands, environment variables or headers. A test checks that secret values never reach the output.
-- **Nothing is deleted.** Plugins are disabled in `settings.json` (`enabledPlugins: false`), not uninstalled. User skills are moved into the backup folder.
+- **Nothing is deleted.** Plugins are disabled in `settings.json` (`enabledPlugins: false`), not uninstalled. Unused user skills are hidden from the model with `skillOverrides` (`"user-invocable-only"`), so `/name` still runs them; `--park-skills` moves them into the backup folder instead. If none of your claude.ai connectors was used, `disableClaudeAiConnectors` switches them off in Claude Code (they stay connected on claude.ai).
 - **Everything is backed up.** Each `fix` writes a manifest and a copy of `settings.json` to `~/.claude/deadweight/backups/<timestamp>/`. `undo` reverts the latest one.
 - **Conservative.** Plugins that run hooks may be doing useful work deadweight can't see (memory, safety checks), so they are skipped unless you pass `--include-hooked`. `fix` refuses to run with fewer than 5 sessions of history.
 - **No network.** deadweight never makes a network request.
 
-MCP servers in `.claude.json` and claude.ai connectors are never edited; deadweight prints the command that removes them, or where to move them, instead.
+MCP servers in `.claude.json` are never edited, and neither is a single claude.ai connector while you still use others; deadweight prints the command that removes them, or where to move them, instead.
 
 ## FAQ
 

@@ -73,7 +73,7 @@ impl Fixture {
             })),
             attachment(json!({
                 "type": "deferred_tools_delta",
-                "addedNames": ["CronCreate", "mcp__plugin_bloat_api__fetch", "mcp__plugin_bloat_api__push", "mcp__idle-srv__query"],
+                "addedNames": ["CronCreate", "mcp__plugin_bloat_api__fetch", "mcp__plugin_bloat_api__push", "mcp__idle-srv__query", "mcp__claude_ai_Gmail__search_threads"],
                 "failedMcpServers": [{ "name": "plugin:bloat:broken", "errorCode": "ENOTFOUND", "error": "getaddrinfo ENOTFOUND" }]
             })),
             attachment(json!({
@@ -175,6 +175,8 @@ fn audit_measures_and_attributes() {
     assert_eq!(a["sessions"], 6);
     assert_eq!(a["failed_mcp"][0]["name"], "plugin:bloat:broken");
     assert_eq!(a["skills_without_description"], json!(["used-skill"]));
+    assert_eq!(a["skill_budget"]["suggested"], 0.02);
+    assert_eq!(a["skill_budget"]["configured"], false);
 
     let bloat = a["sources"]
         .as_array()
@@ -192,6 +194,7 @@ fn audit_measures_and_attributes() {
     assert_eq!(labels(&plan["plugins"]), vec!["bloat@mkt"]);
     assert_eq!(labels(&plan["hooked"]), vec!["hooky@mkt"]);
     assert_eq!(labels(&plan["skills"]), vec!["old-skill"]);
+    assert_eq!(plan["connectors"]["names"], json!(["claude.ai Gmail"]));
 }
 
 #[test]
@@ -218,13 +221,20 @@ fn fix_then_undo_round_trips() {
     assert_eq!(s["enabledPlugins"]["handy@mkt"], true);
     assert_eq!(s["enabledPlugins"]["hooky@mkt"], true);
     assert_eq!(s["theme"], "dark");
-    assert!(!skill.exists());
-    assert!(f.claude().join("skills").join("used-skill").exists());
+    // Skills are hidden from the model, not moved.
+    assert_eq!(
+        s["skillOverrides"],
+        json!({ "old-skill": "user-invocable-only" })
+    );
+    assert!(skill.join("SKILL.md").exists());
+    assert_eq!(s["disableClaudeAiConnectors"], true);
 
     let v = f.json(&["undo", "--yes"]);
     assert_eq!(v["restored"], true);
     let s = f.settings();
     assert_eq!(s["enabledPlugins"]["bloat@mkt"], true);
+    assert!(s.get("skillOverrides").is_none(), "{s}");
+    assert!(s.get("disableClaudeAiConnectors").is_none(), "{s}");
     assert!(skill.join("SKILL.md").exists());
 
     let v = f.json(&["undo", "--yes"]);
@@ -305,4 +315,67 @@ fn user_mcp_used_everywhere_gets_no_scope_hint() {
     project_session(&f, "web", "/home/u/web", 1);
     let v = f.json(&[]);
     assert_eq!(v["analysis"]["scope_hints"], json!([]));
+}
+
+#[test]
+fn park_skills_moves_them_and_undo_brings_them_back() {
+    let f = Fixture::new(6);
+    let skill = f.claude().join("skills").join("old-skill");
+    f.json(&["fix", "--yes", "--park-skills", "--keep", "connectors"]);
+    assert!(!skill.exists());
+    assert!(f.settings().get("skillOverrides").is_none());
+    assert!(f.settings().get("disableClaudeAiConnectors").is_none());
+    f.json(&["undo", "--yes"]);
+    assert!(skill.join("SKILL.md").exists());
+}
+
+#[test]
+fn existing_overrides_are_kept_and_restored() {
+    let f = Fixture::new(6);
+    let mut s = f.settings();
+    s["skillOverrides"] = json!({ "some-other": "off" });
+    s["disableClaudeAiConnectors"] = json!(false);
+    write(&f.claude().join("settings.json"), &s);
+
+    f.json(&["fix", "--yes"]);
+    let s = f.settings();
+    assert_eq!(s["skillOverrides"]["some-other"], "off");
+    assert_eq!(s["skillOverrides"]["old-skill"], "user-invocable-only");
+    assert_eq!(s["disableClaudeAiConnectors"], true);
+
+    f.json(&["undo", "--yes"]);
+    let s = f.settings();
+    assert_eq!(s["skillOverrides"], json!({ "some-other": "off" }));
+    assert_eq!(s["disableClaudeAiConnectors"], false);
+}
+
+#[test]
+fn undo_reads_version_1_manifests() {
+    let f = Fixture::new(6);
+    let dir = f
+        .claude()
+        .join("deadweight")
+        .join("backups")
+        .join("20261112-100000");
+    let parked = dir.join("skills").join("old-skill");
+    fs::create_dir_all(&parked).unwrap();
+    let skill = f.claude().join("skills").join("old-skill");
+    fs::rename(&skill, &parked).unwrap();
+    write(
+        &dir.join("manifest.json"),
+        &json!({
+            "version": 1, "created": "20261112-100000", "tool_version": "0.2.0",
+            "plugins": [{ "key": "bloat@mkt", "previous": true }],
+            "skills": [{ "name": "old-skill", "from": skill, "to": parked }],
+            "restored": false
+        }),
+    );
+    let mut s = f.settings();
+    s["enabledPlugins"]["bloat@mkt"] = json!(false);
+    write(&f.claude().join("settings.json"), &s);
+
+    let v = f.json(&["undo", "--yes"]);
+    assert_eq!(v["restored"], true);
+    assert!(skill.join("SKILL.md").exists());
+    assert_eq!(f.settings()["enabledPlugins"]["bloat@mkt"], true);
 }

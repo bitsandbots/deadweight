@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- `fix` now hides unused user skills with Claude Code's own `skillOverrides` setting (`"user-invocable-only"`) instead of moving their folders. Claude stops seeing them, `/name` still runs them, and nothing on disk moves. `--park-skills` keeps the old behaviour.
+- `fix` turns off claude.ai connectors in Claude Code (`disableClaudeAiConnectors`) when none of them was used in the window. `--keep connectors` skips it. If you use some of them, the report tells you which ones to switch off in `/mcp`.
+- When skill descriptions are dropped, the report says how to make room: hide unused skills, or raise `skillListingBudgetFraction`, with what the extra room costs per request.
+- `undo` restores all of the above, and still reads backups made by 0.1 and 0.2.
+
 ## 0.2.0
 
 - New: user-scope MCP servers that are only used in one or two projects are listed with those projects, so you can move them out of the global config. Usage is counted per project from the session transcripts. Suggested by a reader on dev.to.

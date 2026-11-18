@@ -38,6 +38,12 @@ pub struct Inventory {
     pub settings_hook_commands: Vec<String>,
     /// `(path, characters)` of CLAUDE.md files loaded for the current directory.
     pub memory_files: Vec<(PathBuf, usize)>,
+    /// `skillOverrides` from the user-level `settings.json`.
+    pub skill_overrides: BTreeMap<String, String>,
+    /// `skillListingBudgetFraction`, when the user set one.
+    pub skill_budget_fraction: Option<f64>,
+    /// `disableClaudeAiConnectors: true` in the user-level `settings.json`.
+    pub connectors_disabled: bool,
 }
 
 impl Inventory {
@@ -116,6 +122,23 @@ impl Inventory {
         {
             inv.user_mcp.extend(m.keys().cloned());
         }
+
+        inv.skill_overrides = settings
+            .get("skillOverrides")
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        inv.skill_budget_fraction = settings
+            .get("skillListingBudgetFraction")
+            .and_then(Value::as_f64);
+        inv.connectors_disabled = settings
+            .get("disableClaudeAiConnectors")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         if let Some(h) = settings.get("hooks") {
             collect_commands(h, &mut inv.settings_hook_commands);

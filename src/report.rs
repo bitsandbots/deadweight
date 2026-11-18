@@ -192,6 +192,26 @@ fn problems(a: &Analysis) {
                 ),
             ));
         }
+        if let Some(b) = &a.skill_budget {
+            lines.push(format!(
+                "    {} hide what you don't use ({}), or set {} in settings.json",
+                paint(DIM, "Make room:"),
+                paint(BOLD, "deadweight fix"),
+                paint(
+                    CYAN,
+                    format!("\"skillListingBudgetFraction\": {}", b.suggested)
+                ),
+            ));
+            lines.push(paint(
+                DIM,
+                format!(
+                    "    ({} {}; the extra room costs up to ~{} tokens per request).",
+                    if b.configured { "now" } else { "default" },
+                    b.fraction,
+                    fmt_tokens(b.extra_tokens)
+                ),
+            ));
+        }
     }
     if !a.failed_mcp.is_empty() {
         lines.push(format!(
@@ -291,15 +311,29 @@ fn footer(a: &Analysis, plan: &Plan) {
         }
         if !plan.skills.is_empty() {
             what.push(format!(
-                "park {} unused {}",
+                "{} {} unused {}",
+                if plan.park_skills { "park" } else { "hide" },
                 plan.skills.len(),
                 plural(plan.skills.len(), "skill", "skills")
             ));
         }
+        if let Some(c) = &plan.connectors {
+            what.push(format!(
+                "turn off {} unused claude.ai {}",
+                c.names.len(),
+                plural(c.names.len(), "connector", "connectors")
+            ));
+        }
+        let last = what.pop().unwrap_or_default();
+        let what = if what.is_empty() {
+            last
+        } else {
+            format!("{} and {last}", what.join(", "))
+        };
         println!(
             "  Run {} to {} and save {} per request.",
             paint(BOLD, "deadweight fix"),
-            what.join(" and "),
+            what,
             paint(GREEN, format!("~{} tokens", fmt_tokens(plan.tokens)))
         );
     }
@@ -400,13 +434,32 @@ pub fn print_plan(plan: &Plan) {
         }
     }
     if !plan.skills.is_empty() {
-        println!(
-            "  {}",
-            paint(BOLD, "Move these skills into the backup folder")
-        );
+        let heading = if plan.park_skills {
+            "Move these skills into the backup folder".to_owned()
+        } else {
+            format!(
+                "Hide these skills from Claude (settings.json → skillOverrides: \"{}\"; /name still works)",
+                crate::fix::HIDDEN
+            )
+        };
+        println!("  {}", paint(BOLD, heading));
         for s in &plan.skills {
             println!("    {:<56} ~{}", s.name, fmt_tokens(s.tokens));
         }
+    }
+    if let Some(c) = &plan.connectors {
+        println!(
+            "  {}",
+            paint(
+                BOLD,
+                "Turn off claude.ai connectors in Claude Code (settings.json → disableClaudeAiConnectors: true)"
+            )
+        );
+        println!(
+            "    {:<56} ~{}",
+            truncate(&c.names.join(", "), 56),
+            fmt_tokens(c.tokens)
+        );
     }
     println!(
         "\n  Saves {} per request. Undo any time with {}.",

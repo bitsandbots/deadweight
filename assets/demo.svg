@@ -31,6 +31,6 @@
 <text y="598" xml:space="preserve"><tspan x="37.7" fill="#ff7b72" font-weight="bold">✗</tspan><tspan fill="#c9d1d9"> 2 MCP servers failed to connect at startup</tspan></text>
 <text y="618" xml:space="preserve"><tspan x="37.7" fill="#e3b341" font-weight="bold">!</tspan><tspan fill="#c9d1d9"> 9 MCP servers never signed in, still listing 18 auth-only tools</tspan></text>
 <text y="638" xml:space="preserve"><tspan x="37.7" fill="#e3b341" font-weight="bold">!</tspan><tspan fill="#c9d1d9"> 198 of 214 listed skills were not used in 30 days (~5.1k per request)</tspan></text>
-<text y="678" xml:space="preserve"><tspan x="37.7" fill="#c9d1d9">Run</tspan><tspan fill="#f0f6fc" font-weight="bold"> deadweight fix</tspan><tspan fill="#c9d1d9"> to disable 6 unused plugins and park 11 unused skills</tspan></text>
+<text y="678" xml:space="preserve"><tspan x="37.7" fill="#c9d1d9">Run</tspan><tspan fill="#f0f6fc" font-weight="bold"> deadweight fix</tspan><tspan fill="#c9d1d9"> to disable 6 unused plugins and hide 11 unused skills</tspan></text>
 <text y="698" xml:space="preserve"><tspan x="37.7" fill="#c9d1d9">and save</tspan><tspan fill="#3fb950" font-weight="bold"> ~6.8k tokens</tspan><tspan fill="#c9d1d9"> per request.</tspan></text>
 </g></svg>
