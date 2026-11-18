@@ -8,6 +8,7 @@ Every plugin, skill, MCP server and hook you install adds text to *every single 
 [![crates.io](https://img.shields.io/crates/v/deadweight.svg)](https://crates.io/crates/deadweight)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
+[![Donate](https://img.shields.io/badge/donate-PayPal-00457C?logo=paypal)](https://www.paypal.me/CansuAvci)
 
 <p align="center">
   <img src="assets/demo.svg" alt="deadweight output: every request carries 61.2k tokens before you type; 151 of 214 skills listed without a description" width="760">
@@ -155,6 +156,10 @@ MCP servers in `.claude.json` and claude.ai connectors are never edited; deadwei
 Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the [good first issues](https://github.com/msertdev/deadweight/labels/good%20first%20issue); the whole codebase is about 2,600 lines of Rust.
 
 If deadweight misattributes something in your setup, run `deadweight --json`, remove anything private, and open an issue with the relevant part.
+
+## Support
+
+If deadweight saved you tokens, a star helps other people find it. If you'd like to chip in, you can [donate via PayPal](https://www.paypal.me/CansuAvci). Thank you!
 
 ## License
 
