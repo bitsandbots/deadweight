@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0
+
+- New: `deadweight card` saves a shareable PNG of your numbers: the total every request carries, your setup's share of it, unused skills, the biggest category, and what `fix` would save. Totals only: no plugin, skill or server names. `--output FILE.svg` writes the SVG instead. Fonts are bundled, so it looks the same everywhere.
+
 ## 0.3.0
 
 - `fix` now hides unused user skills with Claude Code's own `skillOverrides` setting (`"user-invocable-only"`) instead of moving their folders. Claude stops seeing them, `/name` still runs them, and nothing on disk moves. `--park-skills` keeps the old behaviour.

@@ -1,4 +1,5 @@
 mod analyze;
+mod card;
 mod fix;
 mod inventory;
 mod paths;
@@ -65,6 +66,17 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Save a shareable card with your totals (no plugin or skill names)
+    Card {
+        /// Where to write it; a `.svg` path gets the SVG instead of a PNG
+        #[arg(
+            long,
+            short,
+            value_name = "FILE",
+            default_value = "deadweight-card.png"
+        )]
+        output: PathBuf,
+    },
     /// Revert the most recent `fix`
     Undo {
         /// Apply without asking
@@ -102,6 +114,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             };
             run_fix(&paths, &cli, &opts, yes, dry_run, force)
         }
+        Some(Command::Card { ref output }) => run_card(&paths, &cli, output),
         Some(Command::Undo { yes }) => run_undo(&paths, cli.json, yes),
     }
 }
@@ -134,6 +147,23 @@ fn audit(paths: &Paths, cli: &Cli) -> Result<ExitCode> {
         );
     } else {
         report::print(&a, &plan, cli.all);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_card(paths: &Paths, cli: &Cli, output: &std::path::Path) -> Result<ExitCode> {
+    let (inv, a) = load(paths, cli.days)?;
+    let plan = fix::plan(&a, &inv, &PlanOptions::default());
+    let card = card::Card::new(&a, &plan);
+    card.write(output)?;
+    if cli.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({ "path": output, "card": card }))?
+        );
+    } else {
+        report::success(&format!("Saved {}", output.display()));
+        report::note("It shows totals only: no plugin, skill or server names. Share away.");
     }
     Ok(ExitCode::SUCCESS)
 }

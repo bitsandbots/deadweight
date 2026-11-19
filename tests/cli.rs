@@ -379,3 +379,29 @@ fn undo_reads_version_1_manifests() {
     assert!(skill.join("SKILL.md").exists());
     assert_eq!(f.settings()["enabledPlugins"]["bloat@mkt"], true);
 }
+
+#[test]
+fn card_shows_totals_and_no_names() {
+    let f = Fixture::new(6);
+    let (ok, text) = f.run(&["card"]);
+    assert!(ok, "{text}");
+    let png = fs::read(f.root.join("work").join("deadweight-card.png")).unwrap();
+    assert_eq!(&png[1..4], b"PNG");
+
+    let v = f.json(&["card", "--output", "card.svg"]);
+    assert_eq!(v["card"]["measured"], 5000.0);
+    let svg = fs::read_to_string(f.root.join("work").join("card.svg")).unwrap();
+    assert!(svg.starts_with("<svg"));
+    assert!(svg.contains("5.0k"));
+    for name in [
+        "bloat",
+        "handy",
+        "hooky",
+        "old-skill",
+        "used-skill",
+        "idle-srv",
+        "Gmail",
+    ] {
+        assert!(!svg.contains(name), "card leaks {name}");
+    }
+}

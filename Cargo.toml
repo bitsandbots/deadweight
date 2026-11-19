@@ -1,6 +1,6 @@
 [package]
 name = "deadweight"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Murat Sert <252145209+msertdev@users.noreply.github.com>"]
@@ -18,7 +18,9 @@ anstream = "0.6"
 anstyle = "1"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+dejavu = "2.37"
 rayon = "1"
+resvg = { version = "0.50", default-features = false, features = ["text"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 
