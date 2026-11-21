@@ -11,7 +11,7 @@ homepage = "https://github.com/msertdev/deadweight"
 readme = "README.md"
 keywords = ["claude-code", "llm", "tokens", "context", "cli"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = [".github/", "assets/"]
+exclude = [".github/", "assets/", "plugin/"]
 
 [dependencies]
 anstream = "0.6"

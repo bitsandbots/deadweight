@@ -1,6 +1,5 @@
 ---
 description: Audit what this setup costs per request
-allowed-tools: Bash(deadweight:*)
 argument-hint: "[fix|scope|undo|card]"
 ---
 

@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "deadweight",
-      "source": "./",
+      "source": "./plugin",
       "description": "Audit what your Claude Code setup costs on every request and remove what you never use.",
       "version": "0.5.0"
     }
