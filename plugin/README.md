@@ -29,7 +29,13 @@ Every change is backed up first and `/deadweight undo` puts it back. Restart Cla
 
 The command runs the `deadweight` program, which this plugin does not include. Get it from the [releases page](https://github.com/msertdev/deadweight/releases) (macOS, Linux and Windows), or see the [install section of the project README](https://github.com/msertdev/deadweight#install). Claude asks for your permission before it runs it.
 
-deadweight reads only files Claude Code writes on your machine and makes no network requests.
+## Privacy
+
+deadweight runs only on your machine and makes no network requests. It reads the session transcripts and settings Claude Code keeps in your Claude Code config folder, to count which plugins, skills, MCP servers and agents you used. It never reads MCP server commands, environment variables or headers, and it doesn't send, upload or share anything. The only files it writes are the settings changes you confirm and their backups, in your Claude Code config folder and, for `scope`, in the `.claude/settings.local.json` of your projects. Delete the backups folder at any time to remove them.
+
+## Support
+
+Questions and bug reports: [GitHub issues](https://github.com/msertdev/deadweight/issues).
 
 ## License
 

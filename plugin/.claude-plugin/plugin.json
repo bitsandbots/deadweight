@@ -8,6 +8,15 @@
   },
   "homepage": "https://github.com/msertdev/deadweight",
   "repository": "https://github.com/msertdev/deadweight",
+  "documentationUrl": "https://github.com/msertdev/deadweight#readme",
+  "supportUrl": "https://github.com/msertdev/deadweight/issues",
+  "privacyPolicyUrl": "https://github.com/msertdev/deadweight/blob/main/plugin/README.md#privacy",
   "license": "MIT",
-  "keywords": ["tokens", "context", "audit", "skills", "mcp"]
+  "keywords": [
+    "tokens",
+    "context",
+    "audit",
+    "skills",
+    "mcp"
+  ]
 }
