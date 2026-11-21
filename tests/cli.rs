@@ -294,13 +294,14 @@ fn user_mcp_used_in_one_project_gets_a_scope_hint() {
     let v = f.json(&[]);
     let hints = &v["analysis"]["scope_hints"];
     assert_eq!(hints.as_array().unwrap().len(), 1, "{hints}");
-    assert_eq!(hints[0]["server"], "idle-srv");
+    assert_eq!(hints[0]["name"], "idle-srv");
+    assert_eq!(hints[0]["kind"], "mcp");
     assert_eq!(hints[0]["used_in"], json!([["C:/code/api", 3]]));
     assert_eq!(hints[0]["projects_total"], 2);
 
     let (ok, text) = f.run(&[]);
     assert!(ok, "{text}");
-    assert!(text.contains("USED IN ONE OR TWO"), "{text}");
+    assert!(text.contains("USED IN A FEW PROJECTS"), "{text}");
     assert!(
         text.contains(r#"projects > "C:/code/api" > mcpServers"#),
         "{text}"
@@ -404,4 +405,231 @@ fn card_shows_totals_and_no_names() {
     ] {
         assert!(!svg.contains(name), "card leaks {name}");
     }
+}
+
+/// A session started in `<root>/<name>` (created on disk) that makes these tool calls.
+fn session_in(f: &Fixture, name: &str, calls: &[Value]) -> PathBuf {
+    let dir = f.root.join(name);
+    fs::create_dir_all(&dir).unwrap();
+    let cwd = dir.to_string_lossy().to_string();
+    let mut lines =
+        vec![json!({ "type": "user", "cwd": cwd, "message": { "role": "user", "content": "hi" } })];
+    lines.extend(calls.iter().cloned());
+    let text: Vec<String> = lines.iter().map(Value::to_string).collect();
+    let project = f.claude().join("projects").join(format!("p-{name}"));
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("s.jsonl"), text.join("\n") + "\n").unwrap();
+    dir
+}
+
+/// handy and used-skill are used in `api` only; `web` and `docs` never use them.
+fn scoped_fixture() -> (Fixture, PathBuf, PathBuf) {
+    let f = Fixture::new(6);
+    let api = session_in(
+        &f,
+        "api",
+        &[
+            tool_use("Skill", json!({ "skill": "handy:helper" })),
+            tool_use("Skill", json!({ "skill": "used-skill" })),
+        ],
+    );
+    let web = session_in(&f, "web", &[]);
+    session_in(&f, "docs", &[]);
+    (f, api, web)
+}
+
+fn local_settings(project: &Path) -> Option<Value> {
+    let text = fs::read_to_string(project.join(".claude").join("settings.local.json")).ok()?;
+    Some(serde_json::from_str(&text).unwrap())
+}
+
+fn names(list: &Value) -> Vec<String> {
+    list.as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn scope_finds_what_is_used_in_few_projects() {
+    let (f, _, _) = scoped_fixture();
+    let v = f.json(&[]);
+    let hints = &v["analysis"]["scope_hints"];
+    let found = names(hints);
+    assert!(found.contains(&"handy@mkt".to_owned()), "{found:?}");
+    assert!(found.contains(&"used-skill".to_owned()), "{found:?}");
+    let handy = hints
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["name"] == "handy@mkt")
+        .unwrap();
+    assert_eq!(handy["kind"], "plugin");
+    assert_eq!(handy["projects_total"], 3);
+    assert_eq!(handy["idle_projects"], 2);
+    assert_eq!(handy["idle_sessions"], 2);
+    assert_eq!(handy["used_in"].as_array().unwrap().len(), 1);
+
+    let (ok, text) = f.run(&[]);
+    assert!(ok, "{text}");
+    assert!(text.contains("USED IN A FEW PROJECTS"), "{text}");
+    assert!(text.contains("deadweight scope"), "{text}");
+}
+
+#[test]
+fn scope_dry_run_changes_nothing() {
+    let (f, api, _) = scoped_fixture();
+    let before = f.settings();
+    let v = f.json(&["scope", "--dry-run"]);
+    assert_eq!(v["applied"], false);
+    assert_eq!(names(&v["plan"]["moves"]).len(), 2, "{v}");
+    assert_eq!(f.settings(), before);
+    assert!(local_settings(&api).is_none());
+}
+
+#[test]
+fn scope_then_undo_round_trips() {
+    let (f, api, web) = scoped_fixture();
+    let v = f.json(&["scope", "--yes"]);
+    assert_eq!(v["applied"], true, "{v}");
+
+    let s = f.settings();
+    assert_eq!(s["enabledPlugins"]["handy@mkt"], false);
+    assert_eq!(s["enabledPlugins"]["bloat@mkt"], true);
+    assert_eq!(s["skillOverrides"]["used-skill"], "user-invocable-only");
+    assert_eq!(s["theme"], "dark");
+    assert_eq!(
+        local_settings(&api).unwrap(),
+        json!({ "enabledPlugins": { "handy@mkt": true }, "skillOverrides": { "used-skill": "on" } })
+    );
+    assert!(!web.join(".claude").exists());
+
+    let v = f.json(&["undo", "--yes"]);
+    assert_eq!(v["restored"], true);
+    let s = f.settings();
+    assert_eq!(s["enabledPlugins"]["handy@mkt"], true);
+    assert!(s.get("skillOverrides").is_none(), "{s}");
+    assert!(!api.join(".claude").exists(), "created files are removed");
+}
+
+#[test]
+fn scope_keeps_what_a_project_already_has() {
+    let (f, api, _) = scoped_fixture();
+    let original = json!({ "permissions": { "allow": ["Bash(ls)"] } });
+    write(&api.join(".claude").join("settings.local.json"), &original);
+
+    f.json(&["scope", "--yes"]);
+    let local = local_settings(&api).unwrap();
+    assert_eq!(local["permissions"], original["permissions"]);
+    assert_eq!(local["enabledPlugins"]["handy@mkt"], true);
+
+    f.json(&["undo", "--yes"]);
+    assert_eq!(local_settings(&api).unwrap(), original);
+}
+
+#[test]
+fn scope_respects_keep() {
+    let (f, _, _) = scoped_fixture();
+    let v = f.json(&["scope", "--dry-run", "--keep", "handy"]);
+    assert_eq!(names(&v["plan"]["moves"]), vec!["used-skill"]);
+}
+
+/// hooky gets used in one more project, next to two that never use it.
+fn hooky_in_one_project(f: &Fixture) {
+    session_in(
+        f,
+        "api2",
+        &[tool_use("Skill", json!({ "skill": "hooky:thing" }))],
+    );
+    session_in(f, "site", &[]);
+}
+
+#[test]
+fn scope_treats_session_start_hooks_as_safe() {
+    let (f, _, _) = scoped_fixture();
+    hooky_in_one_project(&f);
+    // The fixture's hooky only adds context at session start.
+    let v = f.json(&["scope", "--dry-run"]);
+    assert!(
+        names(&v["plan"]["moves"]).contains(&"hooky@mkt".to_owned()),
+        "{v}"
+    );
+}
+
+#[test]
+fn scope_leaves_plugins_with_work_hooks_alone() {
+    let (f, _, _) = scoped_fixture();
+    hooky_in_one_project(&f);
+    // A hook on every edit acts on your work in any project.
+    write(
+        &f.claude()
+            .join("plugins")
+            .join("cache")
+            .join("mkt")
+            .join("hooky")
+            .join("hooks")
+            .join("hooks.json"),
+        &json!({ "hooks": {
+            "SessionStart": [ { "hooks": [ { "type": "command", "command": "hooky-start" } ] } ],
+            "PostToolUse": [ { "matcher": "Edit|Write", "hooks": [ { "type": "command", "command": "hooky-lint" } ] } ]
+        } }),
+    );
+    let v = f.json(&["scope", "--dry-run"]);
+    assert_eq!(names(&v["plan"]["hooked"]), vec!["hooky@mkt"]);
+    let v = f.json(&["scope", "--dry-run", "--include-hooked"]);
+    assert!(
+        names(&v["plan"]["moves"]).contains(&"hooky@mkt".to_owned()),
+        "{v}"
+    );
+}
+
+#[test]
+fn scope_refuses_with_too_little_history() {
+    let f = Fixture::new(1);
+    session_in(
+        &f,
+        "api",
+        &[tool_use("Skill", json!({ "skill": "handy:helper" }))],
+    );
+    session_in(&f, "web", &[]);
+    let (ok, text) = f.run(&["scope", "--yes"]);
+    assert!(!ok);
+    assert!(text.contains("too little history"), "{text}");
+    assert_eq!(f.settings()["enabledPlugins"]["handy@mkt"], true);
+}
+
+#[test]
+fn scope_keeps_created_files_out_of_git() {
+    let (f, api, _) = scoped_fixture();
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(&api)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+    };
+    if git(&["init", "-q"]).is_none() {
+        eprintln!("git not available; skipping");
+        return;
+    }
+    // Claude Code may already have added the pattern to the global excludes.
+    let ignored_globally = git(&["check-ignore", "-q", ".claude/settings.local.json"]).is_some();
+    f.json(&["scope", "--yes"]);
+    let exclude = api.join(".git").join("info").join("exclude");
+    let text = fs::read_to_string(&exclude).unwrap_or_default();
+    assert_eq!(
+        text.lines().any(|l| l == "**/.claude/settings.local.json"),
+        !ignored_globally,
+        "{text}"
+    );
+    let status = git(&["status", "--porcelain", "--untracked-files=all"]).unwrap();
+    let status = String::from_utf8_lossy(&status.stdout).to_string();
+    assert!(!status.contains("settings.local.json"), "{status}");
+
+    f.json(&["undo", "--yes"]);
+    let text = fs::read_to_string(&exclude).unwrap_or_default();
+    assert!(!text.contains("settings.local.json"), "{text}");
 }

@@ -162,6 +162,27 @@ pub struct SettingChange {
     pub previous: Option<Value>,
 }
 
+/// A value deadweight set in a project's `.claude/settings.local.json`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LocalChange {
+    pub file: PathBuf,
+    /// `enabledPlugins` or `skillOverrides`.
+    pub section: String,
+    pub key: String,
+    /// `None` = absent.
+    pub previous: Option<Value>,
+}
+
+/// A project settings file deadweight wrote to, and whether it made it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LocalFile {
+    pub file: PathBuf,
+    /// The file did not exist before.
+    pub created: bool,
+    /// Its `.claude` directory did not exist before.
+    pub created_dir: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Manifest {
     pub version: u32,
@@ -175,16 +196,49 @@ pub struct Manifest {
     /// `disableClaudeAiConnectors` (manifest version 2 and later).
     #[serde(default)]
     pub connectors: Option<SettingChange>,
+    /// Per-project settings written by `scope` (manifest version 3 and later).
+    #[serde(default)]
+    pub local: Vec<LocalChange>,
+    #[serde(default)]
+    pub local_files: Vec<LocalFile>,
+    /// Lines added to a repository's `info/exclude` so a created
+    /// `settings.local.json` stays out of commits.
+    #[serde(default)]
+    pub git_excludes: Vec<GitExclude>,
     pub restored: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GitExclude {
+    pub file: PathBuf,
+    pub line: String,
+}
+
 impl Manifest {
+    pub(crate) fn new(version: u32) -> Self {
+        Manifest {
+            version,
+            created: timestamp_now(),
+            tool_version: env!("CARGO_PKG_VERSION").into(),
+            plugins: Vec::new(),
+            skills: Vec::new(),
+            skill_overrides: Vec::new(),
+            connectors: None,
+            local: Vec::new(),
+            local_files: Vec::new(),
+            git_excludes: Vec::new(),
+            restored: false,
+        }
+    }
+
     fn touches_settings(&self) -> bool {
         !self.plugins.is_empty() || !self.skill_overrides.is_empty() || self.connectors.is_some()
     }
 }
 
-const MANIFEST: &str = "manifest.json";
+pub(crate) const MANIFEST: &str = "manifest.json";
+pub(crate) const ENABLED_KEY: &str = "enabledPlugins";
+pub(crate) const OVERRIDES: &str = OVERRIDES_KEY;
 
 /// Apply a plan. Returns the backup directory.
 pub fn apply(plan: &Plan, paths: &Paths) -> Result<PathBuf> {
@@ -222,9 +276,6 @@ pub fn apply(plan: &Plan, paths: &Paths) -> Result<PathBuf> {
     });
     let enabled = enabled_plugins(&mut settings)?;
     let manifest = Manifest {
-        version: 2,
-        created: timestamp_now(),
-        tool_version: env!("CARGO_PKG_VERSION").into(),
         plugins: plan
             .plugins
             .iter()
@@ -243,7 +294,7 @@ pub fn apply(plan: &Plan, paths: &Paths) -> Result<PathBuf> {
             .collect(),
         skill_overrides,
         connectors,
-        restored: false,
+        ..Manifest::new(2)
     };
     // The manifest goes first so a half-finished run can still be undone.
     write_manifest(&dir, &manifest)?;
@@ -330,12 +381,62 @@ pub fn undo(paths: &Paths, dir: &Path, mut m: Manifest) -> Result<Manifest> {
                 .with_context(|| format!("cannot restore {}", s.from.display()))?;
         }
     }
+    undo_local(&m)?;
     m.restored = true;
     write_manifest(dir, &m)?;
     Ok(m)
 }
 
-fn restore(map: &mut Map<String, Value>, key: &str, previous: &Option<Value>) {
+/// Put back the project settings `scope` wrote, and remove the files and
+/// folders it created once they hold nothing else.
+fn undo_local(m: &Manifest) -> Result<()> {
+    for f in &m.local_files {
+        if !f.file.is_file() {
+            continue;
+        }
+        let mut settings = read_settings(&f.file)?;
+        for c in m.local.iter().filter(|c| c.file == f.file) {
+            let section = object_entry(&mut settings, &c.section)?;
+            restore(section, &c.key, &c.previous);
+            if section.is_empty() {
+                root(&mut settings)?.remove(&c.section);
+            }
+        }
+        let empty = settings.as_object().is_some_and(Map::is_empty);
+        if f.created && empty {
+            fs::remove_file(&f.file)
+                .with_context(|| format!("cannot remove {}", f.file.display()))?;
+            if f.created_dir {
+                if let Some(dir) = f.file.parent() {
+                    // Only succeeds when nothing else was put there since.
+                    let _ = fs::remove_dir(dir);
+                }
+            }
+        } else {
+            write_json_atomic(&f.file, &settings)?;
+        }
+    }
+    for g in &m.git_excludes {
+        let Ok(text) = fs::read_to_string(&g.file) else {
+            continue;
+        };
+        if !text.lines().any(|l| l == g.line) {
+            continue;
+        }
+        let mut kept: Vec<&str> = text.lines().filter(|l| *l != g.line).collect();
+        if kept.last() == Some(&"") {
+            kept.pop();
+        }
+        let mut out = kept.join("\n");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        fs::write(&g.file, out).with_context(|| format!("cannot update {}", g.file.display()))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn restore(map: &mut Map<String, Value>, key: &str, previous: &Option<Value>) {
     match previous {
         Some(v) => {
             map.insert(key.to_owned(), v.clone());
@@ -346,7 +447,7 @@ fn restore(map: &mut Map<String, Value>, key: &str, previous: &Option<Value>) {
     }
 }
 
-fn read_settings(path: &Path) -> Result<Value> {
+pub(crate) fn read_settings(path: &Path) -> Result<Value> {
     match fs::read_to_string(path) {
         Ok(text) => serde_json::from_str(text.trim_start_matches('\u{feff}'))
             .with_context(|| format!("{} is not valid JSON; not touching it", path.display())),
@@ -355,13 +456,16 @@ fn read_settings(path: &Path) -> Result<Value> {
     }
 }
 
-fn root(settings: &mut Value) -> Result<&mut Map<String, Value>> {
+pub(crate) fn root(settings: &mut Value) -> Result<&mut Map<String, Value>> {
     settings
         .as_object_mut()
         .context("settings.json is not a JSON object")
 }
 
-fn object_entry<'a>(settings: &'a mut Value, key: &str) -> Result<&'a mut Map<String, Value>> {
+pub(crate) fn object_entry<'a>(
+    settings: &'a mut Value,
+    key: &str,
+) -> Result<&'a mut Map<String, Value>> {
     root(settings)?
         .entry(key)
         .or_insert_with(|| Value::Object(Map::new()))
@@ -369,15 +473,15 @@ fn object_entry<'a>(settings: &'a mut Value, key: &str) -> Result<&'a mut Map<St
         .with_context(|| format!("{key} in settings.json is not an object"))
 }
 
-fn enabled_plugins(settings: &mut Value) -> Result<&mut Map<String, Value>> {
+pub(crate) fn enabled_plugins(settings: &mut Value) -> Result<&mut Map<String, Value>> {
     object_entry(settings, "enabledPlugins")
 }
 
-fn write_manifest(dir: &Path, m: &Manifest) -> Result<()> {
+pub(crate) fn write_manifest(dir: &Path, m: &Manifest) -> Result<()> {
     write_json_atomic(&dir.join(MANIFEST), &serde_json::to_value(m)?)
 }
 
-fn write_json_atomic(path: &Path, v: &Value) -> Result<()> {
+pub(crate) fn write_json_atomic(path: &Path, v: &Value) -> Result<()> {
     let mut text = serde_json::to_string_pretty(v)?;
     text.push('\n');
     let tmp = path.with_extension("json.deadweight-tmp");

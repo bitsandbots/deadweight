@@ -3,8 +3,9 @@
 use anstream::println;
 use anstyle::{AnsiColor, Style};
 
-use crate::analyze::{Analysis, Kind, Source};
+use crate::analyze::{Analysis, Kind, ScopeHint, ScopeKind, Source};
 use crate::fix::Plan;
+use crate::scope::ScopePlan;
 use crate::util::{bar, fmt_tokens, plural, short_time};
 
 const BOLD: Style = Style::new().bold();
@@ -18,7 +19,7 @@ fn paint(style: Style, text: impl std::fmt::Display) -> String {
     format!("{style}{text}{style:#}")
 }
 
-pub fn print(a: &Analysis, plan: &Plan, show_all: bool) {
+pub fn print(a: &Analysis, plan: &Plan, scope: &ScopePlan, show_all: bool) {
     println!();
     println!(
         "  {}  {}",
@@ -48,7 +49,7 @@ pub fn print(a: &Analysis, plan: &Plan, show_all: bool) {
     categories(a);
     sources(a, show_all);
     problems(a);
-    footer(a, plan);
+    footer(a, plan, scope);
 }
 
 fn headline(a: &Analysis) {
@@ -286,7 +287,7 @@ fn problems(a: &Analysis) {
     println!();
 }
 
-fn footer(a: &Analysis, plan: &Plan) {
+fn footer(a: &Analysis, plan: &Plan, scope: &ScopePlan) {
     if a.sessions < 5 {
         println!(
             "  {}",
@@ -367,7 +368,7 @@ fn footer(a: &Analysis, plan: &Plan) {
             );
         }
     }
-    scope_hints(a);
+    scope_hints(a, scope);
     println!();
     let basis = if a.measured_tokens.is_some() {
         "The total is measured; the breakdown is estimated from text size."
@@ -378,44 +379,174 @@ fn footer(a: &Analysis, plan: &Plan) {
     println!();
 }
 
-fn scope_hints(a: &Analysis) {
+fn scope_hints(a: &Analysis, scope: &ScopePlan) {
     if a.scope_hints.is_empty() {
         return;
     }
     println!();
     println!(
         "  {}",
-        paint(BOLD, "LOADED IN EVERY PROJECT, USED IN ONE OR TWO")
+        paint(BOLD, "LOADED EVERYWHERE, USED IN A FEW PROJECTS")
     );
-    for h in a.scope_hints.iter().take(6) {
-        let used: Vec<String> = h
-            .used_in
-            .iter()
-            .map(|(p, n)| format!("{n}× in {p}"))
-            .collect();
+    for h in a.scope_hints.iter().take(8) {
         println!(
             "  {:<34} ~{:<6} {}",
-            truncate(&format!("mcp server {}", h.server), 34),
+            truncate(&format!("{} {}", h.kind.label(), h.label), 34),
             fmt_tokens(h.tokens),
-            paint(
-                DIM,
-                format!("{} (of {} projects)", used.join(", "), h.projects_total)
-            )
+            paint(DIM, idle_note(h))
         );
-        let target = match h.used_in.as_slice() {
-            [(p, _)] => format!("projects > \"{p}\" > mcpServers"),
-            _ => "each of those projects' mcpServers".to_owned(),
-        };
+        let used: Vec<String> = h.used_in.iter().map(|(p, _)| short_dir(p)).collect();
         println!(
             "    {}",
+            paint(DIM, format!("used in {}", preview(&used, 4)))
+        );
+        if h.kind == ScopeKind::Mcp {
+            mcp_move(h);
+        }
+    }
+    let n = scope.moves.len();
+    if n > 0 {
+        println!(
+            "  Run {} to load {} only where {} used: ~{} less per request everywhere else.",
+            paint(BOLD, "deadweight scope"),
+            if n == 1 {
+                "it".to_owned()
+            } else {
+                format!("these {n}")
+            },
+            plural(n, "it's", "they're"),
+            paint(GREEN, fmt_tokens(scope.tokens))
+        );
+    }
+    if !scope.hooked.is_empty() {
+        let names: Vec<String> = scope.hooked.iter().map(|m| m.label.clone()).collect();
+        println!(
+            "  {}",
             paint(
-                CYAN,
+                DIM,
                 format!(
-                    "in .claude.json, move \"{}\" from the top-level mcpServers into {target}",
-                    h.server
+                    "Not included: {} ({} hooks that act on your work in any project).",
+                    preview(&names, 4),
+                    plural(names.len(), "it has", "they have")
                 )
             )
         );
+    }
+}
+
+/// "idle in 10 of 13 projects (412 of 540 sessions)"
+fn idle_note(h: &ScopeHint) -> String {
+    format!(
+        "idle in {} of {} projects ({} of {} sessions)",
+        h.idle_projects, h.projects_total, h.idle_sessions, h.sessions
+    )
+}
+
+fn mcp_move(h: &ScopeHint) {
+    let target = match h.used_in.as_slice() {
+        [(p, _)] => format!("projects > \"{p}\" > mcpServers"),
+        _ => "each of those projects' mcpServers".to_owned(),
+    };
+    println!(
+        "    {}",
+        paint(
+            CYAN,
+            format!(
+                "in .claude.json, move \"{}\" from the top-level mcpServers into {target}",
+                h.name
+            )
+        )
+    );
+}
+
+/// The last folder of a project path, which is how people name projects.
+fn short_dir(p: &str) -> String {
+    p.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(p)
+        .to_owned()
+}
+
+pub fn print_scope_plan(plan: &ScopePlan) {
+    println!();
+    if !plan.moves.is_empty() {
+        println!(
+            "  {}",
+            paint(BOLD, "Load these only in the projects that use them")
+        );
+        println!(
+            "  {}",
+            paint(
+                DIM,
+                "off in ~/.claude/settings.json, on in each project's .claude/settings.local.json"
+            )
+        );
+        for m in &plan.moves {
+            println!(
+                "    {:<32} ~{:<6} {}",
+                truncate(&format!("{} {}", m.kind.label(), m.label), 32),
+                fmt_tokens(m.tokens),
+                paint(
+                    DIM,
+                    format!(
+                        "saved in {} {} ({} of {} sessions)",
+                        m.idle_projects,
+                        plural(m.idle_projects, "project", "projects"),
+                        m.idle_sessions,
+                        m.sessions
+                    )
+                )
+            );
+            for p in &m.projects {
+                let note = if m.already_on.contains(p) {
+                    " (already on there)"
+                } else {
+                    ""
+                };
+                println!("      {} {}{note}", paint(GREEN, "on"), p.display());
+            }
+        }
+        println!(
+            "\n  Saves {} per request in the projects that never use them. Undo any time with {}.",
+            paint(GREEN, format!("~{} tokens", fmt_tokens(plan.tokens))),
+            paint(BOLD, "deadweight undo")
+        );
+    }
+    if !plan.hooked.is_empty() {
+        let names: Vec<String> = plan.hooked.iter().map(|m| m.label.clone()).collect();
+        println!(
+            "  {}",
+            paint(
+                DIM,
+                format!(
+                    "Left alone because {} hooks that may matter everywhere: {}. Add --include-hooked to scope {} too.",
+                    plural(names.len(), "it runs", "they run"),
+                    preview(&names, 4),
+                    plural(names.len(), "it", "them")
+                )
+            )
+        );
+    }
+    if !plan.mcp.is_empty() {
+        println!();
+        println!(
+            "  {}",
+            paint(
+                BOLD,
+                "MCP servers to move yourself (.claude.json can hold credentials)"
+            )
+        );
+        for h in &plan.mcp {
+            println!(
+                "  {:<34} ~{:<6} {}",
+                truncate(&format!("mcp server {}", h.label), 34),
+                fmt_tokens(h.tokens),
+                paint(DIM, idle_note(h))
+            );
+            mcp_move(h);
+        }
     }
 }
 

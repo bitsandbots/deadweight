@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::Serialize;
 
 use crate::inventory::Inventory;
-use crate::transcript::History;
+use crate::transcript::{History, ProjectUse, Usage};
 
 /// Characters per token for prose such as skill descriptions and hook text.
 const PROSE_CHARS_PER_TOKEN: f64 = 3.6;
@@ -16,8 +16,9 @@ const IDENT_CHARS_PER_TOKEN: f64 = 2.8;
 const SCHEMA_CHARS_PER_TOKEN: f64 = 3.0;
 /// A single skill description above this many tokens is worth pointing out.
 const HEAVY_SKILL_TOKENS: f64 = 400.0;
-/// A user-scope MCP server used in at most this many projects is worth scoping.
-const MAX_SCOPED_PROJECTS: usize = 2;
+/// Something used in at most this many projects (and in at most half of
+/// them) is worth loading only there.
+const MAX_SCOPED_PROJECTS: usize = 5;
 /// Claude Code's default `skillListingBudgetFraction`: 1% of the context window.
 const DEFAULT_SKILL_BUDGET: f64 = 0.01;
 
@@ -192,15 +193,45 @@ pub struct SkillBudget {
     pub extra_tokens: f64,
 }
 
-/// A user-scope MCP server that loads in every project but is only used in a few.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeKind {
+    Plugin,
+    Skill,
+    Mcp,
+}
+
+impl ScopeKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            ScopeKind::Plugin => "plugin",
+            ScopeKind::Skill => "skill",
+            ScopeKind::Mcp => "mcp server",
+        }
+    }
+}
+
+/// Something that loads in every project but is only used in a few of them.
 #[derive(Debug, Clone, Serialize)]
 pub struct ScopeHint {
-    pub server: String,
-    /// `(project directory, tool calls)`, most used first.
+    pub kind: ScopeKind,
+    /// Plugin key (`name@marketplace`), user skill name or MCP server name.
+    pub name: String,
+    pub label: String,
+    /// `(project directory, uses)`, most used first.
     pub used_in: Vec<(String, u32)>,
     /// Projects with sessions in the window.
     pub projects_total: usize,
+    /// Projects with sessions that never used it.
+    pub idle_projects: usize,
+    /// Sessions in those projects: each one paid for it and got nothing.
+    pub idle_sessions: u32,
+    /// Sessions with a known project.
+    pub sessions: u32,
     pub tokens: f64,
+    /// The plugin has hooks that act on your work in any project
+    /// (see [`crate::inventory::Plugin::has_work_hooks`]).
+    pub work_hooks: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -643,37 +674,7 @@ pub fn analyze(inv: &Inventory, hist: &History, window_days: u64) -> Option<Anal
         })
         .collect();
 
-    // User-scope servers that only ever get used in one or two projects.
-    let mut scope_hints: Vec<ScopeHint> = sources
-        .iter()
-        .filter_map(|s| {
-            let Source::UserMcp(name) = &s.source else {
-                return None;
-            };
-            if s.uses == 0 || !inv.user_scope_mcp.contains(name) {
-                return None;
-            }
-            let projects = usage.mcp_by_project.get(&normalize_server(name))?;
-            let other_projects = usage
-                .projects
-                .iter()
-                .filter(|p| !projects.contains_key(*p))
-                .count();
-            if projects.len() > MAX_SCOPED_PROJECTS || other_projects == 0 {
-                return None;
-            }
-            let mut used_in: Vec<(String, u32)> =
-                projects.iter().map(|(p, n)| (p.clone(), *n)).collect();
-            used_in.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            Some(ScopeHint {
-                server: name.clone(),
-                used_in,
-                projects_total: usage.projects.len(),
-                tokens: s.tokens,
-            })
-        })
-        .collect();
-    scope_hints.sort_by(|a, b| b.tokens.total_cmp(&a.tokens));
+    let scope_hints = scope_hints(&attr, inv, usage, &sources);
 
     let skill_budget = (!snap.skills_without_description.is_empty()).then(|| {
         let fraction = inv.skill_budget_fraction.unwrap_or(DEFAULT_SKILL_BUDGET);
@@ -716,6 +717,123 @@ pub fn analyze(inv: &Inventory, hist: &History, window_days: u64) -> Option<Anal
         sessions: usage.sessions,
         history_days: usage.history_days,
     })
+}
+
+/// The plugins, user skills and user-scope MCP servers you use, but only in a
+/// few of your projects. Everywhere else they are loaded for nothing.
+fn scope_hints(
+    attr: &Attributor,
+    inv: &Inventory,
+    usage: &Usage,
+    sources: &[SourceSummary],
+) -> Vec<ScopeHint> {
+    let mut used_in: HashMap<Source, Vec<(String, u32)>> = HashMap::new();
+    for (project, used) in &usage.by_project {
+        for (source, n) in credit_project(attr, inv, used) {
+            used_in
+                .entry(source)
+                .or_default()
+                .push((project.clone(), n));
+        }
+    }
+    let projects_total = usage.sessions_by_project.len();
+    let sessions: u32 = usage.sessions_by_project.values().sum();
+
+    let mut hints: Vec<ScopeHint> = sources
+        .iter()
+        .filter(|s| s.uses > 0 && s.tokens >= 1.0)
+        .filter_map(|s| {
+            let (kind, name) = match &s.source {
+                Source::Plugin(key) => {
+                    let on = inv
+                        .plugins
+                        .iter()
+                        .any(|p| &p.key == key && p.enabled_by_user);
+                    on.then_some((ScopeKind::Plugin, key.clone()))?
+                }
+                Source::UserSkill(name) => (!inv.skill_overrides.contains_key(name))
+                    .then_some((ScopeKind::Skill, name.clone()))?,
+                Source::UserMcp(name) => inv
+                    .user_scope_mcp
+                    .contains(name)
+                    .then_some((ScopeKind::Mcp, name.clone()))?,
+                _ => return None,
+            };
+            let mut projects = used_in.get(&s.source)?.clone();
+            projects.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let idle: Vec<u32> = usage
+                .sessions_by_project
+                .iter()
+                .filter(|(p, _)| !projects.iter().any(|(q, _)| q == *p))
+                .map(|(_, n)| *n)
+                .collect();
+            if idle.is_empty()
+                || projects.len() > MAX_SCOPED_PROJECTS
+                || projects.len() * 2 > projects_total
+            {
+                return None;
+            }
+            Some(ScopeHint {
+                kind,
+                name,
+                label: s.label.clone(),
+                used_in: projects,
+                projects_total,
+                idle_projects: idle.len(),
+                idle_sessions: idle.iter().sum(),
+                sessions,
+                tokens: s.tokens,
+                work_hooks: match &s.source {
+                    Source::Plugin(key) => inv
+                        .plugins
+                        .iter()
+                        .any(|p| &p.key == key && p.has_work_hooks()),
+                    _ => false,
+                },
+            })
+        })
+        .collect();
+    hints.sort_by(|a, b| {
+        b.tokens
+            .total_cmp(&a.tokens)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    hints
+}
+
+/// The plugins, user skills and user-scope MCP servers credited with what one
+/// project's sessions used.
+fn credit_project(attr: &Attributor, inv: &Inventory, used: &ProjectUse) -> HashMap<Source, u32> {
+    let mut out: HashMap<Source, u32> = HashMap::new();
+    let mut add = |source: Source, n: u32| {
+        if matches!(
+            source,
+            Source::Plugin(_) | Source::UserSkill(_) | Source::UserMcp(_)
+        ) {
+            *out.entry(source).or_default() += n;
+        }
+    };
+    for (name, n) in &used.skills {
+        add(attr.skill(name), *n);
+    }
+    for (name, n) in &used.agents {
+        add(attr.agent(name), *n);
+    }
+    for (name, n) in &used.commands {
+        if let Some(s) = attr.prefixed(name) {
+            add(s, *n);
+        } else if inv.user_skills.contains_key(name) {
+            add(Source::UserSkill(name.clone()), *n);
+        } else {
+            for p in inv.plugins.iter().filter(|p| p.entry_names.contains(name)) {
+                add(Source::Plugin(p.key.clone()), *n);
+            }
+        }
+    }
+    for (server, n) in &used.servers {
+        add(attr.server(server), *n);
+    }
+    out
 }
 
 #[cfg(test)]

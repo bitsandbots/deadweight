@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+- New: `deadweight scope`. Plugins and user skills you use in only a few projects are turned off in your user settings and kept on in each of those projects' `.claude/settings.local.json`, so they stop loading everywhere else. Backed up and reverted by `deadweight undo` like `fix`; the plain audit and `--json` (`scope`) show what it would do.
+- Usage is now counted per project for plugins and skills too, not only MCP servers. The same folder recorded as `C:\x`, `C:/x/` or `/c/x` (Git Bash), or in a different letter case on Windows, counts as one project.
+- For `scope`, plugin hooks are told apart: hooks that only add context at session start or react to the plugin's own skills don't hold a plugin back; hooks on every edit, shell command or stop still need `--include-hooked`. (`fix` still skips every unused plugin with hooks, since a hook can be the whole point of a plugin you never call.)
+- A `settings.local.json` that `scope` creates is kept out of git (`.git/info/exclude`) unless git already ignores it, as Claude Code does for the files it creates.
+- `--json`: `analysis.scope_hints` entries now have `kind`, `name`, `label`, `idle_projects`, `idle_sessions`, `sessions` and `work_hooks`; `server` is replaced by `name`.
+
 ## 0.4.0
 
 - New: `deadweight card` saves a shareable PNG of your numbers: the total every request carries, your setup's share of it, unused skills, the biggest category, and what `fix` would save. Totals only: no plugin, skill or server names. `--output FILE.svg` writes the SVG instead. Fonts are bundled, so it looks the same everywhere.

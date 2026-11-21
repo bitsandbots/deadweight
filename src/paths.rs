@@ -51,7 +51,7 @@ impl Paths {
     }
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub fn home_dir() -> Option<PathBuf> {
     #[allow(deprecated)]
     std::env::home_dir().filter(|p| !p.as_os_str().is_empty())
 }

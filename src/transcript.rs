@@ -76,8 +76,46 @@ pub struct Usage {
     pub commands: HashMap<String, u32>,
     /// Directories top-level sessions were started in.
     pub projects: BTreeSet<String>,
-    /// MCP server id (as in `mcp__<id>__tool`) -> project directory -> calls.
-    pub mcp_by_project: HashMap<String, BTreeMap<String, u32>>,
+    /// Top-level sessions per project directory.
+    pub sessions_by_project: BTreeMap<String, u32>,
+    /// What was used in each project directory, subagents included.
+    pub by_project: HashMap<String, ProjectUse>,
+}
+
+/// What one project's sessions used.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct ProjectUse {
+    pub skills: HashMap<String, u32>,
+    pub agents: HashMap<String, u32>,
+    pub commands: HashMap<String, u32>,
+    /// MCP server id (as in `mcp__<id>__tool`) -> calls.
+    pub servers: HashMap<String, u32>,
+}
+
+impl ProjectUse {
+    fn merge(&mut self, other: ProjectUse) {
+        for (dst, src) in [
+            (&mut self.skills, other.skills),
+            (&mut self.agents, other.agents),
+            (&mut self.commands, other.commands),
+            (&mut self.servers, other.servers),
+        ] {
+            add_counts(dst, src);
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.skills.is_empty()
+            && self.agents.is_empty()
+            && self.commands.is_empty()
+            && self.servers.is_empty()
+    }
+}
+
+fn add_counts(dst: &mut HashMap<String, u32>, src: HashMap<String, u32>) {
+    for (k, v) in src {
+        *dst.entry(k).or_default() += v;
+    }
 }
 
 impl Usage {
@@ -90,16 +128,14 @@ impl Usage {
             (&mut self.agents, other.agents),
             (&mut self.commands, other.commands),
         ] {
-            for (k, v) in src {
-                *dst.entry(k).or_default() += v;
-            }
+            add_counts(dst, src);
         }
         self.projects.extend(other.projects);
-        for (server, projects) in other.mcp_by_project {
-            let dst = self.mcp_by_project.entry(server).or_default();
-            for (p, n) in projects {
-                *dst.entry(p).or_default() += n;
-            }
+        for (p, n) in other.sessions_by_project {
+            *self.sessions_by_project.entry(p).or_default() += n;
+        }
+        for (p, used) in other.by_project {
+            self.by_project.entry(p).or_default().merge(used);
         }
         self
     }
@@ -188,18 +224,28 @@ pub fn load(projects: &Path, days: u64) -> History {
         .par_iter()
         .filter(|f| f.modified >= cutoff)
         .map(|f| {
-            let (mut u, cwd) = scan_usage(&f.path).unwrap_or_default();
+            let (mut u, used, cwd) = scan_usage(&f.path).unwrap_or_default();
             if f.top_level {
                 u.sessions = 1;
-                u.projects.extend(cwd);
                 u.history_days = now
                     .duration_since(f.modified)
                     .map(|d| d.as_secs() / 86_400)
                     .unwrap_or(0);
+                if let Some(dir) = &cwd {
+                    u.projects.insert(dir.clone());
+                    u.sessions_by_project.insert(dir.clone(), 1);
+                }
+            }
+            if let Some(dir) = cwd.filter(|_| !used.is_empty()) {
+                u.by_project.insert(dir, used);
             }
             u
         })
         .reduce(Usage::default, Usage::merge);
+    let mut usage = usage;
+    if cfg!(windows) {
+        usage.fold_project_case();
+    }
 
     History {
         latest,
@@ -451,9 +497,66 @@ pub fn project_key(cwd: &str) -> String {
     cwd.replace('\\', "/")
 }
 
+/// One spelling per project directory. Claude Code records the same folder
+/// as `C:\x`, `C:/x/` or, from Git Bash, `/c/x`; on Windows these become
+/// `C:/x`.
+pub fn project_dir(cwd: &str) -> String {
+    let mut s = project_key(cwd);
+    if cfg!(windows) {
+        let b = s.as_bytes();
+        if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b'/' {
+            s = format!("{}:{}", (b[1] as char).to_ascii_uppercase(), &s[2..]);
+        } else if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
+            s = format!("{}{}", (b[0] as char).to_ascii_uppercase(), &s[1..]);
+        }
+    }
+    while s.len() > 1 && s.ends_with('/') && !s.ends_with(":/") {
+        s.pop();
+    }
+    s
+}
+
+impl Usage {
+    /// Merge project keys that differ only in case. Windows paths are not
+    /// case-sensitive, so `Desktop/app` and `desktop/app` are one project.
+    /// The spelling with the most sessions wins.
+    fn fold_project_case(&mut self) {
+        let mut best: HashMap<String, (u32, String)> = HashMap::new();
+        let keys: BTreeSet<String> = self
+            .projects
+            .iter()
+            .chain(self.sessions_by_project.keys())
+            .chain(self.by_project.keys())
+            .cloned()
+            .collect();
+        for k in keys {
+            let n = self.sessions_by_project.get(&k).copied().unwrap_or(0);
+            let e = best
+                .entry(k.to_lowercase())
+                .or_insert_with(|| (n, k.clone()));
+            if n > e.0 {
+                *e = (n, k);
+            }
+        }
+        let canon = |k: &str| best[&k.to_lowercase()].1.clone();
+        self.projects = self.projects.iter().map(|k| canon(k)).collect();
+        let mut sessions = BTreeMap::new();
+        for (k, n) in std::mem::take(&mut self.sessions_by_project) {
+            *sessions.entry(canon(&k)).or_default() += n;
+        }
+        self.sessions_by_project = sessions;
+        let mut by_project: HashMap<String, ProjectUse> = HashMap::new();
+        for (k, used) in std::mem::take(&mut self.by_project) {
+            by_project.entry(canon(&k)).or_default().merge(used);
+        }
+        self.by_project = by_project;
+    }
+}
+
 /// Count every skill, MCP tool, agent and slash command used in one
-/// transcript, and return the directory the session ran in.
-fn scan_usage(path: &Path) -> std::io::Result<(Usage, Option<String>)> {
+/// transcript. Returns the totals, the same counts keyed for the session's
+/// project, and the directory the session ran in.
+fn scan_usage(path: &Path) -> std::io::Result<(Usage, ProjectUse, Option<String>)> {
     let reader = BufReader::with_capacity(256 * 1024, File::open(path)?);
     let mut u = Usage::default();
     let mut cwd: Option<String> = None;
@@ -463,7 +566,7 @@ fn scan_usage(path: &Path) -> std::io::Result<(Usage, Option<String>)> {
         if cwd.is_none() && line.contains("\"cwd\"") {
             cwd = serde_json::from_str::<Value>(&line)
                 .ok()
-                .and_then(|v| v.get("cwd").and_then(Value::as_str).map(project_key));
+                .and_then(|v| v.get("cwd").and_then(Value::as_str).map(project_dir));
         }
         let tool_use = line.contains("\"tool_use\"");
         let command = line.contains("<command-name>");
@@ -523,15 +626,13 @@ fn scan_usage(path: &Path) -> std::io::Result<(Usage, Option<String>)> {
             }
         }
     }
-    if let Some(dir) = &cwd {
-        for (server, n) in mcp_calls {
-            u.mcp_by_project
-                .entry(server)
-                .or_default()
-                .insert(dir.clone(), n);
-        }
-    }
-    Ok((u, cwd))
+    let used = ProjectUse {
+        skills: u.skills.clone(),
+        agents: u.agents.clone(),
+        commands: u.commands.clone(),
+        servers: mcp_calls,
+    };
+    Ok((u, used, cwd))
 }
 
 fn extract_commands(text: &str) -> Vec<String> {
@@ -575,6 +676,35 @@ mod tests {
         let got = split_listing("- bare", &names);
         assert_eq!(got[0], ("bare".into(), 7));
         assert_eq!(got[1].0, "missing");
+    }
+
+    #[test]
+    fn project_dirs_have_one_spelling() {
+        assert_eq!(project_dir("/home/u/app/"), "/home/u/app");
+        assert_eq!(project_dir("/"), "/");
+        if cfg!(windows) {
+            assert_eq!(project_dir(r"c:\Users\u\app\"), "C:/Users/u/app");
+            assert_eq!(project_dir("/c/Users/u/app"), "C:/Users/u/app");
+            assert_eq!(project_dir("C:/"), "C:/");
+        }
+    }
+
+    #[test]
+    fn project_case_variants_fold_into_the_busiest() {
+        let mut u = Usage::default();
+        u.sessions_by_project
+            .insert("C:/Users/u/Desktop/app".into(), 5);
+        u.sessions_by_project
+            .insert("C:/Users/u/desktop/app".into(), 1);
+        u.by_project
+            .entry("C:/Users/u/desktop/app".into())
+            .or_default()
+            .skills
+            .insert("x".into(), 2);
+        u.fold_project_case();
+        assert_eq!(u.sessions_by_project.len(), 1);
+        assert_eq!(u.sessions_by_project["C:/Users/u/Desktop/app"], 6);
+        assert_eq!(u.by_project["C:/Users/u/Desktop/app"].skills["x"], 2);
     }
 
     #[test]
