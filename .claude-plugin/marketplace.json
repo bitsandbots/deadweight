@@ -4,6 +4,9 @@
     "name": "Murat Sert",
     "url": "https://github.com/msertdev"
   },
+  "metadata": {
+    "description": "deadweight: audit what your Claude Code setup costs on every request and trim what you do not use."
+  },
   "plugins": [
     {
       "name": "deadweight",
