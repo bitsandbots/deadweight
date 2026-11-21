@@ -82,6 +82,8 @@ cargo install deadweight
 
 Or grab a prebuilt binary for macOS, Linux or Windows from [Releases](https://github.com/msertdev/deadweight/releases). It's a single binary with no runtime dependencies.
 
+deadweight is not on npm or PyPI. Packages named `deadweight` there are unrelated projects, so `npx deadweight` will not run this tool.
+
 ## Usage
 
 ```sh
